@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # GrievanceIQ
 
 Civic grievance portal: React + Vite + Tailwind frontend, Express + SQLite backend.
@@ -15,3 +16,6 @@ Requires Node.js 22 or newer.
 Set `JWT_SECRET` and `NODE_ENV=production`, and use HTTPS.
 
 Data is stored in `server/data/` (created on first run). Do not share that folder.
+=======
+# mtxhackthon
+>>>>>>> origin/main
