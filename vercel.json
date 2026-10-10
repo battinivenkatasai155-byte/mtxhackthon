@@ -1,0 +1,9 @@
+
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://mtxhackthon.onrender.com/api/:path*"
+    }
+  ]
+}
