@@ -6,6 +6,8 @@ import PortalSelection from "./components/PortalSelection.jsx";
 import LoginPage from "./components/LoginPage.jsx";
 import CitizenDashboard from "./components/CitizenDashboard.jsx";
 import AdminDashboard from "./components/AdminDashboard.jsx";
+import VoiceAssistant from "./components/VoiceAssistant.jsx";
+import CentralDashboard from "./components/CentralDashboard.jsx";
 import { ToastContainer } from "./components/Toast.jsx";
 import { api } from "./api.js";
 
@@ -166,6 +168,8 @@ export default function App() {
         notify={notify}
       />
     );
+  } else if (view === "dashboard" && session?.role === "central") {
+    content = <CentralDashboard user={session.user} complaints={data.complaints} citizens={data.citizens} departments={data.departments} onLogout={handleLogout} />;
   } else if (view === "login") {
     content = (
       <>
@@ -204,6 +208,7 @@ export default function App() {
         Skip to main content
       </a>
       {content}
+      <VoiceAssistant role={session?.role} user={session?.user} complaints={data.complaints} />
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </>
   );

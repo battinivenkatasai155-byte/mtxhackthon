@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Menu, X, LogOut, ShieldCheck } from "lucide-react";
 
-export default function Sidebar({ variant, items, active, onChange, user, onLogout, children }) {
+export default function Sidebar({ variant, items, active, onChange, user, onLogout, portalLabel = "Administration Portal", children }) {
   const [open, setOpen] = useState(false);
   const dark = variant === "admin";
 
@@ -50,7 +50,7 @@ export default function Sidebar({ variant, items, active, onChange, user, onLogo
           <p className="font-bold">
             Grievance<span className={dark ? "text-gold" : "text-brand"}>IQ</span>
           </p>
-          <p className={`text-[11px] ${dark ? "text-gold" : "text-muted"}`}>{dark ? "Administration Portal" : "Citizen Portal"}</p>
+          <p className={`text-[11px] ${dark ? "text-gold" : "text-muted"}`}>{dark ? portalLabel : "Citizen Portal"}</p>
         </div>
       </div>
       {nav}
@@ -102,8 +102,8 @@ export default function Sidebar({ variant, items, active, onChange, user, onLogo
       <div className="lg:pl-64">
         {dark && (
           <div className="hidden items-center justify-between border-b border-line bg-white px-8 py-2.5 text-xs lg:flex">
-            <span className="font-semibold text-navy">Administration Portal</span>
-            <span className="text-muted">Authorised personnel only</span>
+            <span className="font-semibold text-navy">{portalLabel}</span>
+            <span className="text-muted">{portalLabel === "Administration Portal" ? "Authorised personnel only" : "Read-only access"}</span>
           </div>
         )}
         <main id="main" className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">

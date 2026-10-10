@@ -24,7 +24,7 @@ import { DonutChart, BarList, TrendChart, ChartCard } from "./Charts.jsx";
 import { TextInput, inputCls } from "./Field.jsx";
 import { CATEGORIES, PRIORITIES, STATUSES, TODAY, formatDate, isOpen, isPending } from "../data/constants.js";
 
-function ComplaintManager({ title, subtitle, base, departments, citizenName, onOpen }) {
+export function ComplaintManager({ title, subtitle, base, departments, citizenName, onOpen }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("All");
   const [category, setCategory] = useState("All");

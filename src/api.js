@@ -20,6 +20,7 @@ export const api = {
   publicStats: () => request("GET", "/api/public-stats"),
   login: (portal, identifier, password) => request("POST", "/api/auth/login", { portal, identifier, password }),
   register: (data) => request("POST", "/api/auth/register", data),
+  registerAdmin: (data) => request("POST", "/api/auth/admin-register", data),
   logout: () => request("POST", "/api/auth/logout"),
   bootstrap: () => request("GET", "/api/bootstrap"),
   updateProfile: (data) => request("PATCH", "/api/me", data),

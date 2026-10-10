@@ -1,5 +1,6 @@
-import React, { useState } from "react";
-import { Paperclip, Send } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Camera, Paperclip, Send } from "lucide-react";
+import CameraCapture from "./CameraCapture.jsx";
 import { TextInput, SelectInput, TextArea } from "./Field.jsx";
 import { InlineMessage } from "./Toast.jsx";
 import { CATEGORIES, CATEGORY_DEPARTMENT, TODAY } from "../data/constants.js";
@@ -23,6 +24,17 @@ export default function ComplaintForm({ departments, onSubmit }) {
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState({});
   const [fileKey, setFileKey] = useState(0);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const fallbackRef = useRef(null);
+  const preview = useMemo(() => (file?.type.startsWith("image/") ? URL.createObjectURL(file) : ""), [file]);
+  useEffect(() => () => preview && URL.revokeObjectURL(preview), [preview]);
+
+  // getUserMedia only exists on HTTPS/localhost; elsewhere use the device camera picker.
+  const openCamera = () => (navigator.mediaDevices?.getUserMedia ? setCameraOpen(true) : fallbackRef.current?.click());
+  const takeFile = (f) => {
+    setFile(f);
+    setErrors((er) => ({ ...er, file: undefined }));
+  };
 
   const set = (key) => (e) => {
     const value = e.target.value;
@@ -40,7 +52,7 @@ export default function ComplaintForm({ departments, onSubmit }) {
     e.preventDefault();
     const errs = {};
     if (form.title.trim().length < 5) errs.title = "Enter a title of at least 5 characters.";
-    if (form.description.trim().length < 20) errs.description = "Describe the issue in at least 20 characters.";
+    if (form.description.trim() && form.description.trim().length < 20) errs.description = "If provided, the description must be at least 20 characters.";
     if (!form.location.trim()) errs.location = "Enter the location or ward.";
     if (!form.date) errs.date = "Select the date of the issue.";
     else if (form.date > TODAY) errs.date = "The date cannot be in the future.";
@@ -67,7 +79,7 @@ export default function ComplaintForm({ departments, onSubmit }) {
       {errors.form && <InlineMessage type="error">{errors.form}</InlineMessage>}
 
       <TextInput id="c-title" label="Complaint title" required value={form.title} onChange={set("title")} error={errors.title} placeholder="e.g. Streetlight not working on Main Road" />
-      <TextArea id="c-desc" label="Complaint description" required rows={4} value={form.description} onChange={set("description")} error={errors.description} placeholder="Describe what happened, since when and how it affects you" />
+      <TextArea id="c-desc" label="Complaint description (optional)" rows={4} value={form.description} onChange={set("description")} error={errors.description} placeholder="Describe what happened, since when and how it affects you" />
 
       <div className="grid gap-5 sm:grid-cols-2">
         <SelectInput id="c-category" label="Category" required value={form.category} onChange={set("category")} options={CATEGORIES} />
@@ -81,13 +93,25 @@ export default function ComplaintForm({ departments, onSubmit }) {
 
       <div>
         <label htmlFor="c-file" className="mb-1.5 block text-sm font-semibold text-ink">Attachment (optional)</label>
-        <label
-          htmlFor="c-file"
-          className="flex cursor-pointer items-center gap-3 rounded-xl border border-dashed border-slate-300 bg-canvas px-4 py-4 text-sm text-muted transition hover:border-brand hover:text-ink focus-within:ring-4 focus-within:ring-brand/15"
-        >
-          <Paperclip size={18} aria-hidden="true" />
-          <span>{file?.name || "Choose a photo or document"}</span>
-        </label>
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <label
+            htmlFor="c-file"
+            className="flex flex-1 cursor-pointer items-center gap-3 rounded-xl border border-dashed border-slate-300 bg-canvas px-4 py-4 text-sm text-muted transition hover:border-brand hover:text-ink focus-within:ring-4 focus-within:ring-brand/15"
+          >
+            <Paperclip size={18} aria-hidden="true" />
+            <span className="truncate">{file?.name || "Choose a photo or document"}</span>
+          </label>
+          <button type="button" onClick={openCamera} className="inline-flex items-center justify-center gap-2 rounded-xl border border-brand px-5 py-4 text-sm font-semibold text-brand transition hover:bg-teal-50">
+            <Camera size={18} aria-hidden="true" /> Take photo
+          </button>
+          <input ref={fallbackRef} type="file" accept="image/*" capture="environment" className="sr-only" tabIndex={-1} aria-hidden="true" onChange={(e) => { takeFile(e.target.files?.[0] ?? null); e.target.value = ""; }} />
+        </div>
+        {preview && (
+          <div className="mt-3 flex items-center gap-3">
+            <img src={preview} alt="Selected attachment preview" className="h-20 w-20 rounded-xl border border-line object-cover" />
+            <button type="button" onClick={() => { setFile(null); setFileKey((k) => k + 1); }} className="text-sm font-semibold text-rose-700 hover:underline">Remove</button>
+          </div>
+        )}
         <input
           key={fileKey}
           id="c-file"
@@ -106,6 +130,8 @@ export default function ComplaintForm({ departments, onSubmit }) {
           <p className="mt-1 text-xs text-muted">JPG, PNG or PDF, up to 2 MB.</p>
         )}
       </div>
+
+      {cameraOpen && <CameraCapture onClose={() => setCameraOpen(false)} onCapture={(f) => { takeFile(f); setCameraOpen(false); }} />}
 
       <div className="flex justify-end">
         <button type="submit" disabled={busy} className="inline-flex items-center gap-2 rounded-xl bg-brand px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">

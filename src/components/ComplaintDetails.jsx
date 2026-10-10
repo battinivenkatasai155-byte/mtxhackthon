@@ -41,7 +41,7 @@ function Meta({ icon: Icon, label, children }) {
   );
 }
 
-export default function ComplaintDetails({ complaint, citizenName, isAdmin, departments, onClose, onUpdate }) {
+export default function ComplaintDetails({ complaint, citizenName, isAdmin, readOnly, departments, onClose, onUpdate }) {
   const [status, setStatus] = useState(complaint.status);
   const [department, setDepartment] = useState(complaint.department);
   const [priority, setPriority] = useState(complaint.priority);
@@ -68,7 +68,7 @@ export default function ComplaintDetails({ complaint, citizenName, isAdmin, depa
         {isAdmin && <PriorityBadge priority={complaint.priority} />}
       </div>
 
-      <p className="mt-4 text-sm leading-6 text-slate-700">{complaint.description}</p>
+      {complaint.description && <p className="mt-4 text-sm leading-6 text-slate-700">{complaint.description}</p>}
 
       <div className="mt-5 grid gap-4 rounded-2xl bg-canvas p-4 sm:grid-cols-2">
         <Meta icon={Tag} label="Category">{complaint.category}</Meta>
@@ -89,7 +89,7 @@ export default function ComplaintDetails({ complaint, citizenName, isAdmin, depa
         <Timeline items={complaint.timeline} />
       </div>
 
-      {isAdmin && (
+      {isAdmin && !readOnly && (
         <form onSubmit={save} className="mt-8 space-y-4 rounded-2xl border border-line p-5">
           <h3 className="text-sm font-bold uppercase tracking-wide text-navy">Administrative actions</h3>
           <div className="grid gap-4 sm:grid-cols-3">

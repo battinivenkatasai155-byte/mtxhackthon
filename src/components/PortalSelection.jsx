@@ -1,5 +1,5 @@
 import React from "react";
-import { UserRound, Building2, ArrowRight, CheckCircle2, Lock } from "lucide-react";
+import { UserRound, Building2, Landmark, ArrowRight, CheckCircle2, Lock } from "lucide-react";
 
 const PORTALS = [
   {
@@ -24,6 +24,17 @@ const PORTALS = [
     style: "bg-navy text-white border-navy hover:border-gold",
     iconStyle: "bg-white/10 text-gold",
   },
+  {
+    key: "central",
+    title: "Central Government Portal",
+    icon: Landmark,
+    tag: "Single authorised login",
+    text: "National oversight of every complaint, department and citizen record across the platform.",
+    points: ["Read-only access to all data", "Nationwide analytics", "One authorised official only"],
+    cta: "Central Government Sign In",
+    style: "bg-white border-line hover:border-navy",
+    iconStyle: "bg-navy text-gold",
+  },
 ];
 
 export default function PortalSelection({ onSelect, standalone = false }) {
@@ -33,14 +44,15 @@ export default function PortalSelection({ onSelect, standalone = false }) {
         <p className="text-sm font-semibold uppercase tracking-widest text-brand">Choose your portal</p>
         <h2 className="mt-2 text-3xl font-bold tracking-tight text-navy">Sign in to the right workspace</h2>
         <p className="mt-3 text-muted">
-          Citizens and administrators use separate sign-in screens. Administrator access requires
+          Citizens, administrators and the Central Government use separate sign-in screens. Staff and government access requires
           authorised credentials.
         </p>
       </div>
 
-      <div className="mt-10 grid gap-6 md:grid-cols-2">
+      <div className="mt-10 grid gap-6 md:grid-cols-3">
         {PORTALS.map((p) => {
           const dark = p.key === "admin";
+          const locked = p.key !== "citizen";
           return (
             <button
               key={p.key}
@@ -56,7 +68,7 @@ export default function PortalSelection({ onSelect, standalone = false }) {
                     dark ? "bg-gold/15 text-gold" : "bg-slate-100 text-muted"
                   }`}
                 >
-                  {dark && <Lock size={12} aria-hidden="true" />}
+                  {locked && <Lock size={12} aria-hidden="true" />}
                   {p.tag}
                 </span>
               </div>

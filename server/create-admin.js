@@ -1,7 +1,7 @@
 // Usage: npm run create-admin -- --id ADM-1001 --email name@org.gov --name "Full Name" --designation "Grievance Officer" --password "<strong password>"
 // Administrator accounts can only be created from the server command line, never from the public website.
 import bcrypt from "bcryptjs";
-import { db } from "./db.js";
+import { get, run, pool } from "./db.js";
 
 const args = {};
 for (let i = 2; i < process.argv.length; i += 2) args[process.argv[i].replace(/^--/, "")] = process.argv[i + 1];
@@ -21,13 +21,19 @@ if (password.length < 10) {
 }
 
 const hash = bcrypt.hashSync(password, 12);
-const existing = db.prepare("SELECT id FROM users WHERE id = ? COLLATE NOCASE AND role = 'admin'").get(id);
+const existing = await get("SELECT id FROM users WHERE lower(id) = lower($1) AND role = 'admin'", [id]);
 if (existing) {
-  db.prepare("UPDATE users SET name=?, email=?, designation=?, password_hash=? WHERE id=?").run(name, email, designation, hash, existing.id);
+  await run("UPDATE users SET name=$1, email=$2, designation=$3, password_hash=$4 WHERE id=$5", [name, email, designation, hash, existing.id]);
   console.log(`Updated administrator ${existing.id}.`);
 } else {
-  db.prepare(
-    "INSERT INTO users (id, role, name, email, mobile, designation, password_hash, created_at) VALUES (?, 'admin', ?, ?, NULL, ?, ?, ?)"
-  ).run(id.toUpperCase(), name, email, designation, hash, new Date().toISOString());
+  await run("INSERT INTO users (id, role, name, email, mobile, designation, password_hash, created_at) VALUES ($1, 'admin', $2, $3, NULL, $4, $5, $6)", [
+    id.toUpperCase(),
+    name,
+    email,
+    designation,
+    hash,
+    new Date().toISOString(),
+  ]);
   console.log(`Created administrator ${id.toUpperCase()}.`);
 }
+await pool.end();

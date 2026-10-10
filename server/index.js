@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { db, transaction, today, getJwtSecret, DATA_DIR } from "./db.js";
+import { all, get, run, transaction, today, getJwtSecret, DATA_DIR } from "./db.js";
 
 const STATUSES = ["Submitted", "Under Review", "In Progress", "Resolved", "Rejected"];
 const PRIORITIES = ["Low", "Medium", "High"];
@@ -66,11 +66,11 @@ function startSession(res, user) {
 }
 
 function auth(role) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     try {
       const payload = jwt.verify(req.cookies[COOKIE] || "", JWT_SECRET);
       // Role and existence are always re-read from the database, never trusted from the token alone.
-      const user = db.prepare("SELECT * FROM users WHERE id = ?").get(payload.sub);
+      const user = await get("SELECT * FROM users WHERE id = $1", [payload.sub]);
       if (!user || user.role !== payload.role) throw new Error("invalid");
       if (role && user.role !== role) return fail(res, 403, "You do not have permission to perform this action.");
       req.user = user;
@@ -82,31 +82,31 @@ function auth(role) {
 }
 
 const publicUser = (u) =>
-  u.role === "admin"
+  u.role === "admin" || u.role === "central"
     ? { id: u.id, name: u.name, email: u.email, designation: u.designation }
     : { id: u.id, name: u.name, email: u.email, mobile: u.mobile, ward: u.ward, joined: u.created_at.slice(0, 10) };
 
 // --- data helpers ---
-function notify(recipient, text) {
-  db.prepare("INSERT INTO notifications (recipient, text, date) VALUES (?, ?, ?)").run(recipient, text, today());
+function notify(recipient, text, ex) {
+  return run("INSERT INTO notifications (recipient, text, date) VALUES ($1, $2, $3)", [recipient, text, today()], ex);
 }
 
-function loadComplaints(citizenId) {
+async function loadComplaints(citizenId) {
   const rows = citizenId
-    ? db.prepare("SELECT * FROM complaints WHERE citizen_id = ? ORDER BY seq DESC").all(citizenId)
-    : db.prepare("SELECT * FROM complaints ORDER BY seq DESC").all();
+    ? await all("SELECT * FROM complaints WHERE citizen_id = $1 ORDER BY seq DESC", [citizenId])
+    : await all("SELECT * FROM complaints ORDER BY seq DESC");
   const ids = new Set(rows.map((r) => r.id));
-  const group = (table) => {
+  const group = async (table) => {
     const map = new Map();
-    for (const r of db.prepare(`SELECT * FROM ${table} ORDER BY id`).all()) {
+    for (const r of await all(`SELECT * FROM ${table} ORDER BY id`)) {
       if (!ids.has(r.complaint_id)) continue;
       if (!map.has(r.complaint_id)) map.set(r.complaint_id, []);
       map.get(r.complaint_id).push(r);
     }
     return map;
   };
-  const timeline = group("timeline");
-  const notes = group("notes");
+  const timeline = await group("timeline");
+  const notes = await group("notes");
   return rows.map((r) => ({
     id: r.id,
     title: r.title,
@@ -124,15 +124,12 @@ function loadComplaints(citizenId) {
   }));
 }
 
-function loadNotifications(recipient) {
-  return db
-    .prepare("SELECT * FROM notifications WHERE recipient = ? ORDER BY id DESC LIMIT 100")
-    .all(recipient)
-    .map((n) => ({ id: String(n.id), to: n.recipient, text: n.text, date: n.date, read: !!n.read }));
+async function loadNotifications(recipient) {
+  return (await all("SELECT * FROM notifications WHERE recipient = $1 ORDER BY id DESC LIMIT 100", [recipient])).map((n) => ({ id: String(n.id), to: n.recipient, text: n.text, date: n.date, read: n.read }));
 }
 
 // --- auth routes ---
-app.post("/api/auth/register", (req, res) => {
+app.post("/api/auth/register", async (req, res) => {
   const name = str(req.body.name, 80);
   const email = str(req.body.email, 120).toLowerCase();
   const mobile = str(req.body.mobile, 10);
@@ -143,23 +140,57 @@ app.post("/api/auth/register", (req, res) => {
   if (!MOBILE_RE.test(mobile)) return fail(res, 400, "Enter a valid 10-digit mobile number.", "mobile");
   if (password.length < 8 || password.length > 128) return fail(res, 400, "Password must be 8 to 128 characters.", "password");
 
-  if (db.prepare("SELECT 1 FROM users WHERE email = ?").get(email)) return fail(res, 409, "An account with this email already exists.", "email");
-  if (db.prepare("SELECT 1 FROM users WHERE mobile = ?").get(mobile)) return fail(res, 409, "An account with this mobile number already exists.", "mobile");
+  if (await get("SELECT 1 FROM users WHERE lower(email) = $1", [email])) return fail(res, 409, "An account with this email already exists.", "email");
+  if (await get("SELECT 1 FROM users WHERE mobile = $1", [mobile])) return fail(res, 409, "An account with this mobile number already exists.", "mobile");
 
   const id = `C-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
-  db.prepare("INSERT INTO users (id, role, name, email, mobile, password_hash, created_at) VALUES (?, 'citizen', ?, ?, ?, ?, ?)").run(
-    id,
-    name,
-    email,
-    mobile,
-    bcrypt.hashSync(password, 12),
-    new Date().toISOString()
-  );
+  try {
+    await run("INSERT INTO users (id, role, name, email, mobile, password_hash, created_at) VALUES ($1, 'citizen', $2, $3, $4, $5, $6)", [
+      id,
+      name,
+      email,
+      mobile,
+      bcrypt.hashSync(password, 12),
+      new Date().toISOString(),
+    ]);
+  } catch (err) {
+    if (err.code !== "23505") throw err;
+    return fail(res, 409, "An account with this email or mobile number already exists.");
+  }
   res.status(201).json({ ok: true });
 });
 
-app.post("/api/auth/login", (req, res) => {
-  const portal = req.body.portal === "admin" ? "admin" : "citizen";
+// Only emails on this list (ADMIN_EMAILS env var, or one per line in <DATA_DIR>/admin-emails.txt) may create an administrator account; capped at 10.
+const MAX_ADMINS = 10;
+function adminAllowlist() {
+  const file = path.join(DATA_DIR, "admin-emails.txt");
+  const raw = [process.env.ADMIN_EMAILS || "", fs.existsSync(file) ? fs.readFileSync(file, "utf8") : ""].join("\n");
+  return [...new Set(raw.split(/[\s,;]+/).map((e) => e.trim().toLowerCase()).filter((e) => EMAIL_RE.test(e)))].slice(0, MAX_ADMINS);
+}
+
+app.post("/api/auth/admin-register", async (req, res) => {
+  const name = str(req.body.name, 80);
+  const email = str(req.body.email, 120).toLowerCase();
+  const password = typeof req.body.password === "string" ? req.body.password : "";
+  if (name.length < 3) return fail(res, 400, "Enter your full name (at least 3 characters).", "name");
+  if (!EMAIL_RE.test(email)) return fail(res, 400, "Enter a valid email address.", "email");
+  if (password.length < 10 || password.length > 128) return fail(res, 400, "Password must be 10 to 128 characters.", "password");
+  if (!adminAllowlist().includes(email)) return fail(res, 403, "This email is not authorised for administrator access.", "email");
+  if (await get("SELECT 1 FROM users WHERE lower(email) = $1", [email])) return fail(res, 409, "An account with this email already exists.", "email");
+  const id = `ADM-${crypto.randomInt(1000, 10000)}`;
+  try {
+    await run("INSERT INTO users (id, role, name, email, mobile, designation, password_hash, created_at) VALUES ($1, 'admin', $2, $3, NULL, 'Grievance Officer', $4, $5)", [
+      id, name, email, bcrypt.hashSync(password, 12), new Date().toISOString(),
+    ]);
+  } catch (err) {
+    if (err.code !== "23505") throw err;
+    return fail(res, 409, "Could not create the account. Please try again.");
+  }
+  res.status(201).json({ ok: true, id });
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  const portal = ["admin", "central"].includes(req.body.portal) ? req.body.portal : "citizen";
   const identifier = str(req.body.identifier, 120);
   const password = typeof req.body.password === "string" ? req.body.password : "";
   const key = `${req.ip}|${portal}|${identifier.toLowerCase()}`;
@@ -168,9 +199,9 @@ app.post("/api/auth/login", (req, res) => {
   if (!identifier || !password) return fail(res, 400, "Enter your identifier and password.");
 
   const user =
-    portal === "admin"
-      ? db.prepare("SELECT * FROM users WHERE role = 'admin' AND (id = ? COLLATE NOCASE OR email = ? COLLATE NOCASE)").get(identifier, identifier)
-      : db.prepare("SELECT * FROM users WHERE role = 'citizen' AND (email = ? OR mobile = ?)").get(identifier.toLowerCase(), identifier.replace(/[\s-]/g, ""));
+    portal === "admin" || portal === "central"
+      ? await get("SELECT * FROM users WHERE role = $2 AND (lower(id) = lower($1) OR lower(email) = lower($1))", [identifier, portal])
+      : await get("SELECT * FROM users WHERE role = 'citizen' AND (lower(email) = $1 OR mobile = $2)", [identifier.toLowerCase(), identifier.replace(/[\s-]/g, "")]);
 
   const ok = bcrypt.compareSync(password, user ? user.password_hash : DUMMY_HASH) && !!user;
   if (!ok) {
@@ -180,6 +211,8 @@ app.post("/api/auth/login", (req, res) => {
       401,
       portal === "admin"
         ? "Access denied. These credentials are not authorised for the Administration Portal."
+        : portal === "central"
+        ? "Access denied. These credentials are not authorised for the Central Government Portal."
         : "Sign-in failed. Check your email or mobile number and password."
     );
   }
@@ -188,44 +221,41 @@ app.post("/api/auth/login", (req, res) => {
   res.json({ role: user.role, user: publicUser(user) });
 });
 
-app.post("/api/auth/logout", (req, res) => {
+app.post("/api/auth/logout", async (req, res) => {
   res.clearCookie(COOKIE, { path: "/" });
   res.json({ ok: true });
 });
 
-app.get("/api/auth/me", auth(), (req, res) => res.json({ role: req.user.role, user: publicUser(req.user) }));
+app.get("/api/auth/me", auth(), async (req, res) => res.json({ role: req.user.role, user: publicUser(req.user) }));
 
-app.patch("/api/me", auth("citizen"), (req, res) => {
+app.patch("/api/me", auth("citizen"), async (req, res) => {
   const name = str(req.body.name, 80);
   const mobile = str(req.body.mobile, 10);
   const ward = str(req.body.ward, 60);
   if (name.length < 3) return fail(res, 400, "Enter your full name (at least 3 characters).", "name");
   if (!MOBILE_RE.test(mobile)) return fail(res, 400, "Enter a valid 10-digit mobile number.", "mobile");
-  if (db.prepare("SELECT 1 FROM users WHERE mobile = ? AND id != ?").get(mobile, req.user.id)) return fail(res, 409, "This mobile number is already in use.", "mobile");
-  db.prepare("UPDATE users SET name = ?, mobile = ?, ward = ? WHERE id = ?").run(name, mobile, ward, req.user.id);
-  res.json({ user: publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id)) });
+  if (await get("SELECT 1 FROM users WHERE mobile = $1 AND id != $2", [mobile, req.user.id])) return fail(res, 409, "This mobile number is already in use.", "mobile");
+  await run("UPDATE users SET name = $1, mobile = $2, ward = $3 WHERE id = $4", [name, mobile, ward, req.user.id]);
+  res.json({ user: publicUser(await get("SELECT * FROM users WHERE id = $1", [req.user.id])) });
 });
 
-app.get("/api/public-stats", (req, res) => {
-  const c = db.prepare("SELECT COUNT(*) AS received, COALESCE(SUM(status = 'Resolved'), 0) AS resolved FROM complaints").get();
-  const d = db.prepare("SELECT COUNT(*) AS n FROM departments").get();
+app.get("/api/public-stats", async (req, res) => {
+  const c = await get("SELECT COUNT(*)::int AS received, COUNT(*) FILTER (WHERE status = 'Resolved')::int AS resolved FROM complaints");
+  const d = await get("SELECT COUNT(*)::int AS n FROM departments");
   res.json({ received: c.received, resolved: c.resolved, departments: d.n });
 });
 
 // --- application data ---
-app.get("/api/bootstrap", auth(), (req, res) => {
-  const departments = db.prepare("SELECT name, head FROM departments ORDER BY rowid").all();
-  if (req.user.role === "admin") {
-    const citizens = db
-      .prepare("SELECT id, name, email, mobile, ward, created_at FROM users WHERE role = 'citizen' ORDER BY created_at")
-      .all()
-      .map((c) => ({ id: c.id, name: c.name, email: c.email, mobile: c.mobile, ward: c.ward, joined: c.created_at.slice(0, 10) }));
-    return res.json({ departments, complaints: loadComplaints(), citizens, notifications: loadNotifications("admin") });
+app.get("/api/bootstrap", auth(), async (req, res) => {
+  const departments = await all("SELECT name, head FROM departments ORDER BY pos");
+  if (req.user.role === "admin" || req.user.role === "central") {
+    const citizens = (await all("SELECT id, name, email, mobile, ward, created_at FROM users WHERE role = 'citizen' ORDER BY created_at")).map((c) => ({ id: c.id, name: c.name, email: c.email, mobile: c.mobile, ward: c.ward, joined: c.created_at.slice(0, 10) }));
+    return res.json({ departments, complaints: await loadComplaints(), citizens, notifications: req.user.role === "admin" ? await loadNotifications("admin") : [] });
   }
-  res.json({ departments, complaints: loadComplaints(req.user.id), citizens: [], notifications: loadNotifications(req.user.id) });
+  res.json({ departments, complaints: await loadComplaints(req.user.id), citizens: [], notifications: await loadNotifications(req.user.id) });
 });
 
-app.post("/api/complaints", auth("citizen"), (req, res) => {
+app.post("/api/complaints", auth("citizen"), async (req, res) => {
   const title = str(req.body.title, 120);
   const description = str(req.body.description, 2000);
   const category = str(req.body.category, 80);
@@ -234,24 +264,27 @@ app.post("/api/complaints", auth("citizen"), (req, res) => {
   let department = str(req.body.department, 80);
 
   if (title.length < 5) return fail(res, 400, "Title must be at least 5 characters.", "title");
-  if (description.length < 20) return fail(res, 400, "Description must be at least 20 characters.", "description");
+  if (description && description.length < 20) return fail(res, 400, "Description must be at least 20 characters if provided.", "description");
   if (!CATEGORY_DEPARTMENT[category]) return fail(res, 400, "Select a valid category.", "category");
-  if (!db.prepare("SELECT 1 FROM departments WHERE name = ?").get(department)) department = CATEGORY_DEPARTMENT[category];
+  if (!(await get("SELECT 1 FROM departments WHERE name = $1", [department]))) department = CATEGORY_DEPARTMENT[category];
   if (location.length < 3) return fail(res, 400, "Enter the location or ward.", "location");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date))) return fail(res, 400, "Enter a valid date.", "date");
   if (date > today()) return fail(res, 400, "The date cannot be in the future.", "date");
 
-  const id = transaction(() => {
-    const max = db.prepare("SELECT COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 1000) AS m FROM complaints").get().m;
+  const id = await transaction(async (c) => {
+    await run("SELECT pg_advisory_xact_lock(1001)", [], c);
+    const max = (await get("SELECT COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 1000)::int AS m FROM complaints", [], c)).m;
     const newId = `GIQ-${max + 1}`;
-    db.prepare(
-      "INSERT INTO complaints (id, citizen_id, title, description, category, department, location, date, status, priority, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Submitted', 'Medium', ?)"
-    ).run(newId, req.user.id, title, description, category, department, location, date, new Date().toISOString());
-    db.prepare("INSERT INTO timeline (complaint_id, status, date, note) VALUES (?, 'Submitted', ?, 'Complaint submitted by the citizen.')").run(newId, today());
-    notify("admin", `New complaint ${newId} was submitted: ${title}.`);
+    await run(
+      "INSERT INTO complaints (id, citizen_id, title, description, category, department, location, date, status, priority, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Submitted', 'Medium', $9)",
+      [newId, req.user.id, title, description, category, department, location, date, new Date().toISOString()],
+      c
+    );
+    await run("INSERT INTO timeline (complaint_id, status, date, note) VALUES ($1, 'Submitted', $2, 'Complaint submitted by the citizen.')", [newId, today()], c);
+    await notify("admin", `New complaint ${newId} was submitted: ${title}.`, c);
     return newId;
   });
-  res.status(201).json({ id, complaints: loadComplaints(req.user.id) });
+  res.status(201).json({ id, complaints: await loadComplaints(req.user.id) });
 });
 
 const MAGIC = [
@@ -264,19 +297,19 @@ const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const uploadPath = (id) => path.join(UPLOAD_DIR, `${id}.bin`);
 
-app.post("/api/complaints/:id/attachment", auth("citizen"), express.raw({ type: () => true, limit: "2mb" }), (req, res) => {
-  const row = db.prepare("SELECT id, attachment_name FROM complaints WHERE id = ? AND citizen_id = ?").get(req.params.id, req.user.id);
+app.post("/api/complaints/:id/attachment", auth("citizen"), express.raw({ type: () => true, limit: "2mb" }), async (req, res) => {
+  const row = await get("SELECT id, attachment_name FROM complaints WHERE id = $1 AND citizen_id = $2", [req.params.id, req.user.id]);
   if (!row) return fail(res, 404, "Complaint not found.");
   if (row.attachment_name) return fail(res, 409, "This complaint already has an attachment.");
   if (!Buffer.isBuffer(req.body) || !detectType(req.body)) return fail(res, 400, "Attach a JPG, PNG or PDF file (up to 2 MB).");
   const name = str(req.query.name, 120).replace(/[^\w.\- ]/g, "_") || "attachment";
   fs.writeFileSync(uploadPath(row.id), req.body);
-  db.prepare("UPDATE complaints SET attachment_name = ? WHERE id = ?").run(name, row.id);
-  res.json({ complaints: loadComplaints(req.user.id) });
+  await run("UPDATE complaints SET attachment_name = $1 WHERE id = $2", [name, row.id]);
+  res.json({ complaints: await loadComplaints(req.user.id) });
 });
 
-app.get("/api/complaints/:id/attachment", auth(), (req, res) => {
-  const row = db.prepare("SELECT id, citizen_id, attachment_name FROM complaints WHERE id = ?").get(req.params.id);
+app.get("/api/complaints/:id/attachment", auth(), async (req, res) => {
+  const row = await get("SELECT id, citizen_id, attachment_name FROM complaints WHERE id = $1", [req.params.id]);
   if (!row || !row.attachment_name || (req.user.role === "citizen" && row.citizen_id !== req.user.id)) return fail(res, 404, "Attachment not found.");
   const file = uploadPath(row.id);
   if (!fs.existsSync(file)) return fail(res, 404, "Attachment not found.");
@@ -285,8 +318,8 @@ app.get("/api/complaints/:id/attachment", auth(), (req, res) => {
   res.send(buf);
 });
 
-app.patch("/api/complaints/:id", auth("admin"), (req, res) => {
-  const current = db.prepare("SELECT * FROM complaints WHERE id = ?").get(req.params.id);
+app.patch("/api/complaints/:id", auth("admin"), async (req, res) => {
+  const current = await get("SELECT * FROM complaints WHERE id = $1", [req.params.id]);
   if (!current) return fail(res, 404, "Complaint not found.");
 
   const status = str(req.body.status, 20) || current.status;
@@ -296,40 +329,40 @@ app.patch("/api/complaints/:id", auth("admin"), (req, res) => {
 
   if (!STATUSES.includes(status)) return fail(res, 400, "Invalid status.", "status");
   if (!PRIORITIES.includes(priority)) return fail(res, 400, "Invalid priority.", "priority");
-  if (!db.prepare("SELECT 1 FROM departments WHERE name = ?").get(department)) return fail(res, 400, "Unknown department.", "department");
+  if (!(await get("SELECT 1 FROM departments WHERE name = $1", [department]))) return fail(res, 400, "Unknown department.", "department");
 
   const statusChanged = status !== current.status;
   const deptChanged = department !== current.department;
   const priorityChanged = priority !== current.priority;
-  if (!statusChanged && !deptChanged && !priorityChanged && !note) return res.json({ changed: false, complaints: loadComplaints() });
+  if (!statusChanged && !deptChanged && !priorityChanged && !note) return res.json({ changed: false, complaints: await loadComplaints() });
 
-  transaction(() => {
+  await transaction(async (c) => {
     const d = today();
-    const addTimeline = (st, text) => db.prepare("INSERT INTO timeline (complaint_id, status, date, note) VALUES (?, ?, ?, ?)").run(current.id, st, d, text);
-    if (deptChanged) addTimeline(statusChanged ? status : current.status, `Assigned to ${department}.`);
-    if (priorityChanged) addTimeline(statusChanged ? status : current.status, `Priority set to ${priority}.`);
-    if (statusChanged) addTimeline(status, note || `Status changed to ${status}.`);
-    else if (note) addTimeline(current.status, `Administrative note: ${note}`);
-    if (note) db.prepare("INSERT INTO notes (complaint_id, text, date) VALUES (?, ?, ?)").run(current.id, note, d);
-    db.prepare("UPDATE complaints SET status = ?, priority = ?, department = ? WHERE id = ?").run(status, priority, department, current.id);
-    if (statusChanged) notify(current.citizen_id, `Your complaint ${current.id} is now ${status}.`);
+    const addTimeline = (st, text) => run("INSERT INTO timeline (complaint_id, status, date, note) VALUES ($1, $2, $3, $4)", [current.id, st, d, text], c);
+    if (deptChanged) await addTimeline(statusChanged ? status : current.status, `Assigned to ${department}.`);
+    if (priorityChanged) await addTimeline(statusChanged ? status : current.status, `Priority set to ${priority}.`);
+    if (statusChanged) await addTimeline(status, note || `Status changed to ${status}.`);
+    else if (note) await addTimeline(current.status, `Administrative note: ${note}`);
+    if (note) await run("INSERT INTO notes (complaint_id, text, date) VALUES ($1, $2, $3)", [current.id, note, d], c);
+    await run("UPDATE complaints SET status = $1, priority = $2, department = $3 WHERE id = $4", [status, priority, department, current.id], c);
+    if (statusChanged) await notify(current.citizen_id, `Your complaint ${current.id} is now ${status}.`, c);
   });
-  res.json({ changed: true, complaints: loadComplaints() });
+  res.json({ changed: true, complaints: await loadComplaints() });
 });
 
-app.post("/api/departments", auth("admin"), (req, res) => {
+app.post("/api/departments", auth("admin"), async (req, res) => {
   const name = str(req.body.name, 80);
   const head = str(req.body.head, 80);
   if (name.length < 3) return fail(res, 400, "Enter a department name (at least 3 characters).", "name");
-  if (db.prepare("SELECT 1 FROM departments WHERE name = ? COLLATE NOCASE").get(name)) return fail(res, 409, "This department already exists.", "name");
-  db.prepare("INSERT INTO departments (name, head) VALUES (?, ?)").run(name, head);
-  res.status(201).json({ departments: db.prepare("SELECT name, head FROM departments ORDER BY rowid").all() });
+  if (await get("SELECT 1 FROM departments WHERE lower(name) = lower($1)", [name])) return fail(res, 409, "This department already exists.", "name");
+  await run("INSERT INTO departments (name, head) VALUES ($1, $2)", [name, head]);
+  res.status(201).json({ departments: await all("SELECT name, head FROM departments ORDER BY pos") });
 });
 
-app.post("/api/notifications/read", auth(), (req, res) => {
+app.post("/api/notifications/read", auth(), async (req, res) => {
   const recipient = req.user.role === "admin" ? "admin" : req.user.id;
-  db.prepare("UPDATE notifications SET read = 1 WHERE recipient = ?").run(recipient);
-  res.json({ notifications: loadNotifications(recipient) });
+  await run("UPDATE notifications SET read = TRUE WHERE recipient = $1", [recipient]);
+  res.json({ notifications: await loadNotifications(recipient) });
 });
 
 app.use("/api", (req, res) => fail(res, 404, "Not found."));
@@ -338,7 +371,7 @@ app.use("/api", (req, res) => fail(res, 404, "Not found."));
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 if (fs.existsSync(dist)) {
   app.use(express.static(dist));
-  app.get(/^(?!\/api).*/, (req, res) => res.sendFile(path.join(dist, "index.html")));
+  app.get(/^(?!\/api).*/, async (req, res) => res.sendFile(path.join(dist, "index.html")));
 }
 
 app.use((err, req, res, next) => {

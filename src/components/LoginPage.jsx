@@ -1,12 +1,12 @@
 import React, { useState } from "react";
-import { Eye, EyeOff, ArrowLeft, ShieldCheck, Lock, UserRound, Building2, ArrowRight } from "lucide-react";
+import { Eye, EyeOff, ArrowLeft, ShieldCheck, Lock, UserRound, Building2, Landmark, ArrowRight } from "lucide-react";
 import { TextInput } from "./Field.jsx";
 import { InlineMessage } from "./Toast.jsx";
 import { api } from "../api.js";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MOBILE_RE = /^[6-9]\d{9}$/;
-const EMPLOYEE_RE = /^ADM-\d{4}$/i;
+const EMPLOYEE_RE = /^(ADM|CGOV)-\d{4}$/i;
 
 function PasswordInput({ id, label, value, onChange, error, autoComplete, hint }) {
   const [show, setShow] = useState(false);
@@ -51,7 +51,9 @@ function PasswordInput({ id, label, value, onChange, error, autoComplete, hint }
 
 export default function LoginPage({ portal, onLogin, onBack, initialMode = "login" }) {
   const isAdmin = portal === "admin";
-  const [mode, setMode] = useState(portal === "admin" ? "login" : initialMode); // login | register | forgot
+  const isCentral = portal === "central";
+  const isStaff = isAdmin || isCentral;
+  const [mode, setMode] = useState(initialMode); // login | register | forgot
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ identifier: "", password: "", name: "", email: "", mobile: "", confirm: "" });
   const [errors, setErrors] = useState({});
@@ -73,12 +75,12 @@ export default function LoginPage({ portal, onLogin, onBack, initialMode = "logi
     const id = form.identifier.trim();
     const errs = {};
 
-    if (!id) errs.identifier = isAdmin ? "Enter your official email or employee ID." : "Enter your email or mobile number.";
-    else if (isAdmin && !(EMAIL_RE.test(id) || EMPLOYEE_RE.test(id))) errs.identifier = "Use a valid email or an employee ID such as ADM-1234.";
-    else if (!isAdmin && !(EMAIL_RE.test(id) || MOBILE_RE.test(id))) errs.identifier = "Enter a valid email or 10-digit mobile number.";
+    if (!id) errs.identifier = isStaff ? "Enter your official email or employee ID." : "Enter your email or mobile number.";
+    else if (isStaff && !(EMAIL_RE.test(id) || EMPLOYEE_RE.test(id))) errs.identifier = "Use a valid official email or employee ID.";
+    else if (!isStaff && !(EMAIL_RE.test(id) || MOBILE_RE.test(id))) errs.identifier = "Enter a valid email or 10-digit mobile number.";
 
     if (!form.password) errs.password = "Enter your password.";
-    else if (!isAdmin && form.password.length < 8) errs.password = "Password must be at least 8 characters.";
+    else if (!isStaff && form.password.length < 8) errs.password = "Password must be at least 8 characters.";
 
     setErrors(errs);
     if (Object.keys(errs).length) {
@@ -100,8 +102,8 @@ export default function LoginPage({ portal, onLogin, onBack, initialMode = "logi
     const errs = {};
     if (form.name.trim().length < 3) errs.name = "Enter your full name (at least 3 characters).";
     if (!EMAIL_RE.test(form.email.trim())) errs.email = "Enter a valid email address.";
-    if (!MOBILE_RE.test(form.mobile.trim())) errs.mobile = "Enter a valid 10-digit mobile number.";
-    if (form.password.length < 8) errs.password = "Password must be at least 8 characters.";
+    if (!isAdmin && !MOBILE_RE.test(form.mobile.trim())) errs.mobile = "Enter a valid 10-digit mobile number.";
+    if (form.password.length < (isAdmin ? 10 : 8)) errs.password = `Password must be at least ${isAdmin ? 10 : 8} characters.`;
     if (form.confirm !== form.password) errs.confirm = "Passwords do not match.";
 
     setErrors(errs);
@@ -112,7 +114,8 @@ export default function LoginPage({ portal, onLogin, onBack, initialMode = "logi
 
     setBusy(true);
     try {
-      await api.register({ name: form.name.trim(), email: form.email.trim(), mobile: form.mobile.trim(), password: form.password });
+      if (isAdmin) await api.registerAdmin({ name: form.name.trim(), email: form.email.trim(), password: form.password });
+      else await api.register({ name: form.name.trim(), email: form.email.trim(), mobile: form.mobile.trim(), password: form.password });
       setForm((f) => ({ ...f, identifier: form.email.trim(), password: "", confirm: "" }));
       setMode("login");
       setErrors({});
@@ -141,27 +144,29 @@ export default function LoginPage({ portal, onLogin, onBack, initialMode = "logi
     });
   }
 
-  const Icon = isAdmin ? Building2 : UserRound;
+  const Icon = isCentral ? Landmark : isAdmin ? Building2 : UserRound;
 
   return (
     <main id="main" className="mx-auto grid min-h-[calc(100vh-4rem)] max-w-6xl items-stretch gap-0 px-4 py-8 sm:px-6 lg:grid-cols-5 lg:py-12">
       <aside
         className={`hidden flex-col justify-between rounded-l-3xl p-10 lg:col-span-2 lg:flex ${
-          isAdmin ? "bg-navy text-white" : "bg-brand text-white"
+          isStaff ? "bg-navy text-white" : "bg-brand text-white"
         }`}
       >
         <div>
           <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/10">
-            <Icon size={24} className={isAdmin ? "text-gold" : "text-white"} aria-hidden="true" />
+            <Icon size={24} className={isStaff ? "text-gold" : "text-white"} aria-hidden="true" />
           </div>
-          <p className={`mt-6 text-xs font-bold uppercase tracking-widest ${isAdmin ? "text-gold" : "text-teal-100"}`}>
-            {isAdmin ? "Authorised personnel only" : "Citizen access"}
+          <p className={`mt-6 text-xs font-bold uppercase tracking-widest ${isStaff ? "text-gold" : "text-teal-100"}`}>
+            {isCentral ? "Single authorised official" : isAdmin ? "Authorised personnel only" : "Citizen access"}
           </p>
           <h1 className="mt-3 text-3xl font-bold leading-tight">
-            {isAdmin ? "Administration Portal" : "Citizen Portal"}
+            {isCentral ? "Central Government Portal" : isAdmin ? "Administration Portal" : "Citizen Portal"}
           </h1>
           <p className="mt-4 text-sm leading-6 text-white/80">
-            {isAdmin
+            {isCentral
+              ? "Read-only national oversight of complaints, departments and resolution performance. Access is limited to one authorised official."
+              : isAdmin
               ? "Manage complaints, assign departments and monitor resolution performance. Access is restricted to authorised personnel."
               : "Submit civic complaints, track their progress and receive status updates in one place."}
           </p>
@@ -171,7 +176,9 @@ export default function LoginPage({ portal, onLogin, onBack, initialMode = "logi
             <Lock size={14} aria-hidden="true" /> Secure sign-in
           </p>
           <p className="mt-1">
-            {isAdmin
+            {isCentral
+              ? "This portal has a single login issued by the organisation. Sign-in attempts are rate-limited."
+              : isAdmin
               ? "Administrator accounts are issued by the organisation. Sign-in attempts are rate-limited."
               : "Your password is stored securely and your session is protected. Never share your password."}
           </p>
@@ -186,23 +193,25 @@ export default function LoginPage({ portal, onLogin, onBack, initialMode = "logi
         <div className="flex items-center gap-2">
           <span
             className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ${
-              isAdmin ? "bg-navy text-gold" : "bg-teal-50 text-brand"
+              isStaff ? "bg-navy text-gold" : "bg-teal-50 text-brand"
             }`}
           >
             <ShieldCheck size={13} aria-hidden="true" />
-            {isAdmin ? "Administration Portal" : "Citizen Portal"}
+            {isCentral ? "Central Government Portal" : isAdmin ? "Administration Portal" : "Citizen Portal"}
           </span>
         </div>
 
         <h2 className="mt-4 text-2xl font-bold text-navy">
-          {mode === "register" ? "Create a citizen account" : mode === "forgot" ? "Reset your password" : isAdmin ? "Administrator sign in" : "Sign in to your account"}
+          {mode === "register" ? (isAdmin ? "Create an administrator account" : "Create a citizen account") : mode === "forgot" ? "Reset your password" : isCentral ? "Central Government sign in" : isAdmin ? "Administrator sign in" : "Sign in to your account"}
         </h2>
         <p className="mt-1.5 text-sm text-muted">
           {mode === "register"
-            ? "Create your account to submit and track civic complaints."
+            ? isAdmin
+              ? "Only email addresses authorised by the organisation can register."
+              : "Create your account to submit and track civic complaints."
             : mode === "forgot"
             ? "Enter your account identifier."
-            : isAdmin
+            : isStaff
             ? "Enter your official email or employee ID."
             : "Use your email or mobile number."}
         </p>
@@ -217,12 +226,12 @@ export default function LoginPage({ portal, onLogin, onBack, initialMode = "logi
           <form onSubmit={submitLogin} noValidate className="mt-6 space-y-5">
             <TextInput
               id="identifier"
-              label={isAdmin ? "Official email or employee ID" : "Email or mobile number"}
+              label={isStaff ? "Official email or employee ID" : "Email or mobile number"}
               value={form.identifier}
               onChange={set("identifier")}
               error={errors.identifier}
               autoComplete="username"
-              placeholder={isAdmin ? "ADM-1234 or name@department.example" : "you@example.com or 9876543210"}
+              placeholder={isCentral ? "name@gov.example" : isAdmin ? "ADM-1234 or name@department.example" : "you@example.com or 9876543210"}
               required
             />
             <PasswordInput id="password" label="Password" value={form.password} onChange={set("password")} error={errors.password} autoComplete="current-password" />
@@ -235,10 +244,10 @@ export default function LoginPage({ portal, onLogin, onBack, initialMode = "logi
               type="submit"
               disabled={busy}
               className={`flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold text-white shadow-sm transition disabled:opacity-60 ${
-                isAdmin ? "bg-navy hover:bg-navy-light" : "bg-brand hover:bg-brand-dark"
+                isStaff ? "bg-navy hover:bg-navy-light" : "bg-brand hover:bg-brand-dark"
               }`}
             >
-              {busy ? "Signing in…" : isAdmin ? "Sign in to Administration" : "Sign in"} <ArrowRight size={16} aria-hidden="true" />
+              {busy ? "Signing in…" : isCentral ? "Sign in to Central Portal" : isAdmin ? "Sign in to Administration" : "Sign in"} <ArrowRight size={16} aria-hidden="true" />
             </button>
 
             {!isAdmin ? (
@@ -248,8 +257,15 @@ export default function LoginPage({ portal, onLogin, onBack, initialMode = "logi
                   Create an account
                 </button>
               </p>
+            ) : isCentral ? (
+              <p className="text-center text-xs text-muted">This portal has one login, issued by the organisation. It cannot be registered here.</p>
             ) : (
-              <p className="text-center text-xs text-muted">Administrator accounts cannot be created here. Access is granted by the organisation.</p>
+              <p className="text-center text-sm text-muted">
+                Authorised email?{" "}
+                <button type="button" onClick={() => switchMode("register")} className="font-semibold text-brand hover:text-brand-dark">
+                  Create an administrator account
+                </button>
+              </p>
             )}
           </form>
         )}
@@ -259,12 +275,12 @@ export default function LoginPage({ portal, onLogin, onBack, initialMode = "logi
             <TextInput id="name" label="Full name" value={form.name} onChange={set("name")} error={errors.name} autoComplete="name" required />
             <div className="grid gap-5 sm:grid-cols-2">
               <TextInput id="email" type="email" label="Email" value={form.email} onChange={set("email")} error={errors.email} autoComplete="email" required />
-              <TextInput id="mobile" label="Mobile number" inputMode="numeric" maxLength={10} value={form.mobile} onChange={set("mobile")} error={errors.mobile} autoComplete="tel" required />
+              {!isAdmin && <TextInput id="mobile" label="Mobile number" inputMode="numeric" maxLength={10} value={form.mobile} onChange={set("mobile")} error={errors.mobile} autoComplete="tel" required />}
             </div>
-            <PasswordInput id="password" label="Password" value={form.password} onChange={set("password")} error={errors.password} autoComplete="new-password" hint="At least 8 characters." />
+            <PasswordInput id="password" label="Password" value={form.password} onChange={set("password")} error={errors.password} autoComplete="new-password" hint={isAdmin ? "At least 10 characters." : "At least 8 characters."} />
             <PasswordInput id="confirm" label="Confirm password" value={form.confirm} onChange={set("confirm")} error={errors.confirm} autoComplete="new-password" />
             <button type="submit" disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-60">
-              {busy ? "Creating account…" : "Create account"}
+              {busy ? "Creating account…" : isAdmin ? "Create administrator account" : "Create account"}
             </button>
             <p className="text-center text-sm text-muted">
               Already registered?{" "}
